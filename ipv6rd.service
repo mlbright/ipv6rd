@@ -1,0 +1,20 @@
+[Unit]
+Description=ipv6rd - re-knock fwknop SPA when the egress IPv6 address rotates
+Documentation=file:///home/ubuntu/ipv6rd/README.md
+# Source selection and the command (op/fwknop/curl) need a usable IPv6 address.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as the user so the 1Password CLI (op) session/token in poke-hole.sh works.
+# Address monitoring, route lookups and sending the SPA packet do not need root.
+User=mbright
+ExecStart=/home/ubuntu/ipv6rd/ipv6rd --dest 2606:4700:4700::1111 --debounce 2s --reconcile 5m --timeout 60s --retries 3 -- /home/ubuntu/ipv6rd/poke-hole.sh
+Restart=on-failure
+RestartSec=5s
+# Give a running command time to finish on stop before SIGKILL.
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=multi-user.target
