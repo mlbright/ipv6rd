@@ -13,5 +13,5 @@ The event of the egress address value changing from one address to a different o
 _Avoid_: renewal, refresh, change
 
 **Re-knock**:
-Re-sending the fwknop Single Packet Authorization with the current egress address, so the remote firewall re-authorizes the new source IP. The primary command the watcher fires on rotation, though the command is configurable.
+Re-sending the fwknop Single Packet Authorization with the current egress address, so the remote firewall re-authorizes the new source IP. The watcher's primary action on rotation — performed either in-process via the fwknop library (built-in fwknop mode) or by running a configured command (generic mode).
 _Avoid_: knock, ping, poke
