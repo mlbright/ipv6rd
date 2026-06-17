@@ -18,8 +18,13 @@ PKG_NAME := $(BIN)-$(GIT_VERSION)-$(GOOS)-$(GOARCH)
 PREFIX       ?= /usr/local
 UNITDIR      ?= /etc/systemd/system
 ENVFILE      ?= /etc/ipv6rd.env
-SERVICE_USER ?= mbright
+SERVICE_USER ?= ubuntu
 INSTALL      ?= install
+
+# Binary that install-systemd installs. That target does NOT build it, so the
+# service can be installed on a host without the Go toolchain (e.g. unpacked from a
+# release tarball). Run `make build` to produce it, or point this at a prebuilt one.
+PREBUILT     ?= $(BIN)
 
 .PHONY: all build run install install-systemd uninstall-systemd package \
 	test retest vet fmt tidy clean help
@@ -35,9 +40,10 @@ run: build  ## Build and run locally (pass flags via ARGS, e.g. make run ARGS='-
 install:  ## Install the binary to $GOPATH/bin (go install)
 	$(GO) install $(GOFLAGS) -ldflags "$(LDFLAGS)" .
 
-install-systemd: build  ## Install the binary, systemd unit, and an env-file scaffold (needs root)
+install-systemd:  ## Install a prebuilt binary, systemd unit, and env-file scaffold (needs root, not Go)
+	@test -e $(PREBUILT) || { echo "error: '$(PREBUILT)' not found; run 'make build' (needs Go) or set PREBUILT=/path/to/ipv6rd" >&2; exit 1; }
 	$(INSTALL) -d $(DESTDIR)$(PREFIX)/bin
-	$(INSTALL) -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	$(INSTALL) -m 0755 $(PREBUILT) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	$(INSTALL) -d $(DESTDIR)$(UNITDIR)
 	sed -e 's,^ExecStart=[^ ]*,ExecStart=$(PREFIX)/bin/$(BIN),' \
 	    -e 's,^User=.*,User=$(SERVICE_USER),' \
@@ -71,6 +77,7 @@ package: build  ## Build a distributable tarball under dist/
 	$(INSTALL) -m 0644 README.md         $(DIST_DIR)/$(PKG_NAME)/README.md
 	$(INSTALL) -m 0644 CONTEXT.md        $(DIST_DIR)/$(PKG_NAME)/CONTEXT.md
 	$(INSTALL) -m 0755 poke-hole.sh      $(DIST_DIR)/$(PKG_NAME)/poke-hole.sh
+	$(INSTALL) -m 0644 Makefile          $(DIST_DIR)/$(PKG_NAME)/Makefile
 	cp -r docs                           $(DIST_DIR)/$(PKG_NAME)/docs
 	tar -C $(DIST_DIR) -czf $(DIST_DIR)/$(PKG_NAME).tar.gz $(PKG_NAME)
 	rm -rf $(DIST_DIR)/$(PKG_NAME)

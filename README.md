@@ -39,8 +39,10 @@ so each rotation only sends the SPA packet.
 ## Build
 
 ```sh
-go build -o ipv6rd .
+make build        # or: go build -o ipv6rd .
 ```
+
+`make help` lists all targets (build, install, install-systemd, package, …).
 
 ## Usage
 
@@ -100,24 +102,42 @@ reads it as `$1`.
 
 ## Install as a systemd service
 
+The simplest path uses the Makefile:
+
 ```sh
-go build -o ipv6rd .
-sudo cp ipv6rd.service /etc/systemd/system/ipv6rd.service
+make build                  # needs Go; produces ./ipv6rd
+sudo make install-systemd   # install binary + unit + 0600 env-file scaffold
 sudo systemctl daemon-reload
 sudo systemctl enable --now ipv6rd
 journalctl -u ipv6rd -f
 ```
 
-The shipped unit runs in built-in fwknop mode and reads the 1Password
-service-account token from an `EnvironmentFile`. Create it with `0600`
-permissions, owned by the user the service runs as:
+`install-systemd` installs the binary to `/usr/local/bin` (override `PREFIX=`),
+rewrites the unit's `ExecStart`/`User` to match, and creates `/etc/ipv6rd.env`
+(`0600`) only if it's absent. It does **not** compile anything, so the target
+host needs `make` and root but not the Go toolchain. To deploy where Go isn't
+installed, build a release tarball on a machine that has Go and unpack it on the
+target — it bundles the prebuilt binary and the Makefile:
 
 ```sh
-sudo install -m 600 -o mbright /dev/null /etc/ipv6rd.env
+make package                          # on a build host (with Go) -> dist/ipv6rd-*.tar.gz
+# copy the tarball to the target, then there:
+tar xzf ipv6rd-*.tar.gz && cd ipv6rd-*/
+sudo make install-systemd             # installs the bundled binary; no Go needed
+```
+
+The shipped unit runs in built-in fwknop mode and reads the 1Password
+service-account token from `/etc/ipv6rd.env`. The scaffold leaves it empty; add
+the token:
+
+```sh
 sudo tee /etc/ipv6rd.env >/dev/null <<'EOF'
 OP_SERVICE_ACCOUNT_TOKEN=ops_your_service_account_token_here
 EOF
 ```
+
+`make uninstall-systemd` stops the service and removes the unit and binary,
+leaving `/etc/ipv6rd.env` (which holds the secret) in place.
 
 To use generic command mode instead, change `ExecStart` to pass `-- <command>`
 (e.g. `poke-hole.sh`) and drop the `--fwknop-*` flags; the `EnvironmentFile` is
