@@ -506,20 +506,27 @@ func buildAction(ctx context.Context, cfg config) (actionFunc, error) {
 	return fwknopAction(cfg.fwknop, encKey, hmacKey), nil
 }
 
-// fwknopAction sends an fwknop SPA packet authorizing addr for the configured access
-// request, using the pre-resolved encryption and HMAC keys. The access entries are
-// joined into one fwknop access specification.
+// fwknopAction sends one fwknop SPA packet per configured access entry, authorizing
+// addr for each, using the pre-resolved encryption and HMAC keys. The SPA message
+// format encodes a single proto/port per packet, so each entry is sent as its own
+// knock rather than combined into one request. Entries are sent in order; the first
+// failure aborts and is retried (with the full set) by fireWithRetry.
 func fwknopAction(fc fwknopConfig, encKey, hmacKey []byte) actionFunc {
-	access := strings.Join(fc.access, ",")
 	return func(ctx context.Context, addr string) error {
-		return fwknop.Knock{
-			Access:      access,
-			AllowIP:     addr,
-			Destination: fc.dest,
-			Port:        fc.port,
-			EncKey:      encKey,
-			HMACKey:     hmacKey,
-		}.Send(ctx)
+		for _, entry := range fc.access {
+			err := fwknop.Knock{
+				Access:      entry,
+				AllowIP:     addr,
+				Destination: fc.dest,
+				Port:        fc.port,
+				EncKey:      encKey,
+				HMACKey:     hmacKey,
+			}.Send(ctx)
+			if err != nil {
+				return fmt.Errorf("access %s: %w", entry, err)
+			}
+		}
+		return nil
 	}
 }
 
