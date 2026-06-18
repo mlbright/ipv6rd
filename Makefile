@@ -27,6 +27,7 @@ CONFIG       ?= $(CONFIGDIR)/ipv6rd.toml
 SERVICE_USER ?= ubuntu
 
 # macOS / launchd
+MACOS_PREFIX    ?= $(HOME)/.local
 LAUNCHD_LABEL   ?= com.ipv6rd.ipv6rd
 LAUNCHD_DIR     ?= $(HOME)/Library/LaunchAgents
 LAUNCHD_PLIST   ?= $(LAUNCHD_DIR)/$(LAUNCHD_LABEL).plist
@@ -95,11 +96,11 @@ uninstall-systemd:  ## Stop and remove the systemd unit and installed binary (ne
 
 install-launchd:  ## Install a prebuilt binary, launchd user agent, config, and env-file scaffold (macOS, no root)
 	@test -e $(PREBUILT) || { echo "error: '$(PREBUILT)' not found; run 'make build' (needs Go) or set PREBUILT=/path/to/ipv6rd" >&2; exit 1; }
-	$(INSTALL) -d $(DESTDIR)$(PREFIX)/bin
-	$(INSTALL) -m 0755 $(PREBUILT) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	$(INSTALL) -d $(DESTDIR)$(MACOS_PREFIX)/bin
+	$(INSTALL) -m 0755 $(PREBUILT) $(DESTDIR)$(MACOS_PREFIX)/bin/$(BIN)
 	@printf '#!/bin/sh\n. "%s/.config/ipv6rd/ipv6rd.env"\nexec "%s/bin/ipv6rd" --config "%s/.config/ipv6rd/ipv6rd.toml" "$$@"\n' \
-		"$(HOME)" "$(PREFIX)" "$(HOME)" > $(DESTDIR)$(PREFIX)/bin/$(BIN)-wrapper
-	@chmod 0755 $(DESTDIR)$(PREFIX)/bin/$(BIN)-wrapper
+		"$(HOME)" "$(MACOS_PREFIX)" "$(HOME)" > $(DESTDIR)$(MACOS_PREFIX)/bin/$(BIN)-wrapper
+	@chmod 0755 $(DESTDIR)$(MACOS_PREFIX)/bin/$(BIN)-wrapper
 	$(INSTALL) -d $(MACOS_CONFIGDIR)
 	@if [ ! -e $(MACOS_CONFIG) ]; then \
 		test -e $(EXAMPLE) || { echo "error: '$(EXAMPLE)' not found; cannot scaffold $(MACOS_CONFIG)" >&2; exit 1; }; \
@@ -126,7 +127,7 @@ install-launchd:  ## Install a prebuilt binary, launchd user agent, config, and 
 		echo '	<string>$(LAUNCHD_LABEL)</string>'; \
 		echo '	<key>ProgramArguments</key>'; \
 		echo '	<array>'; \
-		printf '		<string>%s/bin/$(BIN)-wrapper</string>\n' "$(PREFIX)"; \
+		printf '		<string>%s/bin/$(BIN)-wrapper</string>\n' "$(MACOS_PREFIX)"; \
 		echo '	</array>'; \
 		echo '	<key>RunAtLoad</key>'; \
 		echo '	<true/>'; \
@@ -140,7 +141,7 @@ install-launchd:  ## Install a prebuilt binary, launchd user agent, config, and 
 		echo '</plist>'; \
 	} > $(LAUNCHD_PLIST)
 	@echo
-	@echo "Installed $(BIN) as a launchd user agent."
+	@echo "Installed $(BIN) as a launchd user agent (binary: $(MACOS_PREFIX)/bin/$(BIN))."
 	@echo "Next steps:"
 	@echo "  1. edit $(MACOS_CONFIG)        # SPA target, port, access list, op:// key refs"
 	@echo "  2. edit $(MACOS_ENVFILE)       # set OP_SERVICE_ACCOUNT_TOKEN"
@@ -149,8 +150,8 @@ install-launchd:  ## Install a prebuilt binary, launchd user agent, config, and 
 uninstall-launchd:  ## Stop and remove the launchd user agent and installed binary (macOS)
 	-launchctl bootout gui/$$(id -u) $(LAUNCHD_PLIST) 2>/dev/null || true
 	rm -f $(LAUNCHD_PLIST)
-	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)-wrapper
-	rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	rm -f $(DESTDIR)$(MACOS_PREFIX)/bin/$(BIN)-wrapper
+	rm -f $(DESTDIR)$(MACOS_PREFIX)/bin/$(BIN)
 	@echo "Removed the $(BIN) agent and binary. $(MACOS_CONFIG) and $(MACOS_ENVFILE) (holds a secret) were left in place."
 
 package: build  ## Build a distributable tarball under dist/

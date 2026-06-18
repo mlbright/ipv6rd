@@ -153,8 +153,8 @@ make build                  # needs Go; produces ./ipv6rd
 make install-launchd        # install binary, wrapper, plist, config, and env-file scaffold
 ```
 
-`install-launchd` installs the binary to `/usr/local/bin` (override `PREFIX=`), writes
-a wrapper script at `/usr/local/bin/ipv6rd-wrapper` that sources the env file before
+`install-launchd` installs the binary to `~/.local/bin` (override `MACOS_PREFIX=`), writes
+a wrapper script at `~/.local/bin/ipv6rd-wrapper` that sources the env file before
 exec-ing the binary, scaffolds `~/.config/ipv6rd/ipv6rd.toml` from `ipv6rd.toml.example`
 (only if absent), and creates `~/.config/ipv6rd/ipv6rd.env` (`0600`, only if absent).
 
