@@ -1,17 +1,16 @@
-// Command ipv6rd watches the host's outbound (egress) IPv6 address and re-knocks
-// whenever that address rotates, keeping an fwknop SPA grant in sync with a
+// Command ipv6rd watches the host's outbound (egress) IPv6 address and re-knocks an
+// fwknop SPA grant whenever that address rotates, keeping the grant pinned to a
 // rotating IPv6 temporary/dynamic address.
 //
-// It supports two modes:
-//   - Built-in fwknop mode (--fwknop-* flags): sends the SPA packet in process
-//     via the fwknop library, fetching the encryption and HMAC keys from
-//     1Password through a service account.
-//   - Generic command mode (-- command): runs a configured command with the new
-//     address appended as the final argument (also exported as $IPV6RD_ADDR).
+// All settings are read from a TOML configuration file (default /etc/ipv6rd/ipv6rd.toml,
+// override with --config); the only input from outside the file is the 1Password
+// service-account token in OP_SERVICE_ACCOUNT_TOKEN. The SPA packet is sent in
+// process via the fwknop-go library, with the encryption and HMAC keys resolved
+// once at startup from 1Password. See docs/adr/0002 and docs/adr/0003.
 //
 // The egress address is determined by the kernel's source-address selection via
-// netlink RouteGet (see docs/adr/0001-egress-address-via-route-get.md), not by
-// parsing the interface address table. Linux-only.
+// netlink RouteGet against the SPA target (see docs/adr/0001-egress-address-via-route-get.md),
+// not by parsing the interface address table. Linux-only.
 package main
 
 import (
@@ -23,11 +22,13 @@ import (
 	"log/slog"
 	"net"
 	"os"
-	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/BurntSushi/toml"
 
 	onepassword "github.com/1password/onepassword-sdk-go"
 	"github.com/damienstuart/fwknop-go/fwknop"
@@ -37,39 +38,53 @@ import (
 // opIntegrationVersion identifies this integration to the 1Password SDK.
 const opIntegrationVersion = "1.0.0"
 
+// defaultConfigPath is read when --config is not given.
+const defaultConfigPath = "/etc/ipv6rd/ipv6rd.toml"
+
 type config struct {
-	dest      net.IP        // destination used for kernel source-address selection
-	destRaw   string        // dest as given on the command line (IP or hostname)
 	debounce  time.Duration // quiet period after an address event before recomputing
 	reconcile time.Duration // reconciliation poll interval (backstop for missed events)
-	timeout   time.Duration // per-attempt command timeout
-	attempts  int           // max command attempts before giving up
-	command   []string      // generic mode: command argv; the new address is appended last
-	fwknop    *fwknopConfig // built-in fwknop mode: non-nil when --fwknop-* flags are set
+	timeout   time.Duration // per-attempt knock timeout
+	attempts  int           // max knock attempts before giving up
+	dest      net.IP        // probe destination (the resolved SPA target) for source-address selection
+	fwknop    fwknopConfig  // SPA target and access request
 }
 
-// fwknopConfig holds the built-in fwknop SPA mode settings. The encryption and HMAC
-// keys are not stored here; they are resolved from 1Password at startup.
+// fwknopConfig holds the SPA knock settings. The encryption and HMAC keys are not
+// stored here; they are resolved from 1Password at startup.
 type fwknopConfig struct {
-	access  string // requested access specification, e.g. "tcp/443"
-	dest    string // SPA target host (where the packet is sent)
-	port    int    // UDP port fwknopd listens on
-	keyRef  string // 1Password secret reference (op://...) for the base64 encryption key
-	hmacRef string // 1Password secret reference (op://...) for the base64 HMAC key
+	dest    string   // SPA target host (where the packet is sent; also the probe destination)
+	port    int      // UDP port fwknopd listens on
+	access  []string // access request: proto/port entries, e.g. ["tcp/443", "tcp/22"]
+	keyRef  string   // 1Password secret reference (op://...) for the base64 encryption key
+	hmacRef string   // 1Password secret reference (op://...) for the base64 HMAC key
 }
 
 // actionFunc performs one re-knock attempt for addr. Cancelled via ctx (per-attempt
-// timeout). exec mode and fwknop mode each provide one implementation.
+// timeout).
 type actionFunc func(ctx context.Context, addr string) error
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	cfg, err := parseFlags(os.Args[1:])
+	fs := flag.NewFlagSet("ipv6rd", flag.ContinueOnError)
+	configPath := fs.String("config", defaultConfigPath, "path to the TOML configuration file")
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(),
+			"usage: ipv6rd [--config PATH]\n\n"+
+				"Re-knocks an fwknop SPA grant whenever the egress IPv6 address rotates.\n"+
+				"All settings are read from the TOML config file (default %s); the\n"+
+				"1Password service-account token is read from OP_SERVICE_ACCOUNT_TOKEN.\n\n"+
+				"flags:\n", defaultConfigPath)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		os.Exit(2) // flag already printed the error and usage
+	}
+
+	cfg, err := loadConfig(*configPath)
 	if err != nil {
-		if !errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stderr, "ipv6rd:", err)
-		}
+		fmt.Fprintln(os.Stderr, "ipv6rd:", err)
 		os.Exit(2)
 	}
 
@@ -79,113 +94,188 @@ func main() {
 	}
 }
 
-func parseFlags(args []string) (config, error) {
-	fs := flag.NewFlagSet("ipv6rd", flag.ContinueOnError)
-	dest := fs.String("dest", "2606:4700:4700::1111", "IPv6 address or hostname used for kernel source-address selection (the egress address is the source the kernel picks to reach it); for fwknop precision, point this at the SPA target")
-	debounce := fs.Duration("debounce", 2*time.Second, "quiet period after an address event before recomputing the egress address")
-	reconcile := fs.Duration("reconcile", 5*time.Minute, "reconciliation poll interval; backstop that recomputes even if a netlink event is missed")
-	timeout := fs.Duration("timeout", 60*time.Second, "per-attempt timeout for the command")
-	attempts := fs.Int("retries", 3, "maximum command attempts before giving up (bounded exponential backoff between attempts)")
-	fwknopAccess := fs.String("fwknop-access", "tcp/443", "fwknop mode: access specification to request")
-	fwknopDest := fs.String("fwknop-dest", "", "fwknop mode: SPA target host the packet is sent to (any --fwknop-* flag enables built-in fwknop mode)")
-	fwknopPort := fs.Int("fwknop-port", 0, "fwknop mode: UDP port fwknopd listens on (required in fwknop mode)")
-	fwknopKeyRef := fs.String("fwknop-key-ref", "", "fwknop mode: 1Password secret reference (op://vault/item/field) for the base64 encryption key")
-	fwknopHMACRef := fs.String("fwknop-hmac-ref", "", "fwknop mode: 1Password secret reference (op://vault/item/field) for the base64 HMAC key")
-	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(),
-			"usage:\n"+
-				"  ipv6rd [flags] --fwknop-dest HOST --fwknop-port N \\\n"+
-				"         --fwknop-key-ref op://... --fwknop-hmac-ref op://...\n"+
-				"  ipv6rd [flags] -- command [args...]\n\n"+
-				"Re-knocks whenever the egress IPv6 address rotates. In built-in fwknop mode\n"+
-				"(--fwknop-* flags) the SPA packet is sent in process and the keys are read from\n"+
-				"1Password (OP_SERVICE_ACCOUNT_TOKEN). In generic mode the command is run with the\n"+
-				"new address appended as the final argument (also exported as $IPV6RD_ADDR).\n\n"+
-				"flags:\n")
-		fs.PrintDefaults()
+// fileConfig mirrors the TOML file. Durations are Go strings (e.g. "2s"); retries is
+// a pointer so an absent key (default) is distinguishable from an explicit 0 (error).
+type fileConfig struct {
+	Debounce  string      `toml:"debounce"`
+	Reconcile string      `toml:"reconcile"`
+	Timeout   string      `toml:"timeout"`
+	Retries   *int        `toml:"retries"`
+	Fwknop    *fwknopFile `toml:"fwknop"`
+}
+
+type fwknopFile struct {
+	Dest    string   `toml:"dest"`
+	Port    int      `toml:"port"`
+	Access  []string `toml:"access"`
+	KeyRef  string   `toml:"key_ref"`
+	HMACRef string   `toml:"hmac_ref"`
+}
+
+// loadConfig reads, strictly decodes, and validates the TOML config at path. A
+// missing file or any unknown key is a fatal error.
+func loadConfig(path string) (config, error) {
+	var fc fileConfig
+	md, err := toml.DecodeFile(path, &fc)
+	if err != nil {
+		return config{}, fmt.Errorf("reading config %s: %w", path, err)
 	}
-	if err := fs.Parse(args); err != nil {
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, len(undecoded))
+		for i, k := range undecoded {
+			keys[i] = k.String()
+		}
+		return config{}, fmt.Errorf("unknown key(s) in config: %s", strings.Join(keys, ", "))
+	}
+
+	debounce, err := parseDuration("debounce", fc.Debounce, 2*time.Second, true)
+	if err != nil {
 		return config{}, err
 	}
-
-	if *attempts < 1 {
-		return config{}, errors.New("--retries must be >= 1")
+	reconcile, err := parseDuration("reconcile", fc.Reconcile, 5*time.Minute, false)
+	if err != nil {
+		return config{}, err
 	}
-
-	// Built-in fwknop mode is enabled when any --fwknop-* flag is explicitly set.
-	fwknopMode := false
-	fs.Visit(func(f *flag.Flag) {
-		if strings.HasPrefix(f.Name, "fwknop-") {
-			fwknopMode = true
-		}
-	})
-
-	ip, err := resolveDest(*dest)
+	timeout, err := parseDuration("timeout", fc.Timeout, 60*time.Second, false)
 	if err != nil {
 		return config{}, err
 	}
 
-	cfg := config{
+	attempts := 3
+	if fc.Retries != nil {
+		attempts = *fc.Retries
+	}
+	if attempts < 1 {
+		return config{}, errors.New("retries must be >= 1")
+	}
+
+	if fc.Fwknop == nil {
+		return config{}, errors.New("missing [fwknop] section")
+	}
+	f := fc.Fwknop
+	if f.Dest == "" {
+		return config{}, errors.New("fwknop.dest is required (the SPA target host)")
+	}
+	if f.Port < 1 || f.Port > 65535 {
+		return config{}, errors.New("fwknop.port must be in 1..65535")
+	}
+	if f.KeyRef == "" {
+		return config{}, errors.New("fwknop.key_ref is required")
+	}
+	if f.HMACRef == "" {
+		return config{}, errors.New("fwknop.hmac_ref is required")
+	}
+
+	// Absent access (nil) defaults to tcp/443; an explicit empty list is an error.
+	access := f.Access
+	if access == nil {
+		access = []string{"tcp/443"}
+	} else if len(access) == 0 {
+		return config{}, errors.New("fwknop.access is empty; list at least one protocol/port (e.g. \"tcp/443\") or omit it for the default")
+	}
+	for _, e := range access {
+		if err := validateAccessEntry(e); err != nil {
+			return config{}, fmt.Errorf("fwknop.access entry %q: %w", e, err)
+		}
+	}
+
+	ip, err := resolveDest(f.Dest)
+	if err != nil {
+		return config{}, err
+	}
+
+	return config{
+		debounce:  debounce,
+		reconcile: reconcile,
+		timeout:   timeout,
+		attempts:  attempts,
 		dest:      ip,
-		destRaw:   *dest,
-		debounce:  *debounce,
-		reconcile: *reconcile,
-		timeout:   *timeout,
-		attempts:  *attempts,
-	}
+		fwknop: fwknopConfig{
+			dest:    f.Dest,
+			port:    f.Port,
+			access:  access,
+			keyRef:  f.KeyRef,
+			hmacRef: f.HMACRef,
+		},
+	}, nil
+}
 
-	command := fs.Args()
-	if fwknopMode {
-		if len(command) > 0 {
-			return config{}, errors.New("built-in fwknop mode (--fwknop-* flags) cannot be combined with a trailing '-- command'")
-		}
-		if *fwknopDest == "" {
-			return config{}, errors.New("--fwknop-dest is required in fwknop mode")
-		}
-		if *fwknopPort < 1 || *fwknopPort > 65535 {
-			return config{}, errors.New("--fwknop-port must be in 1..65535 in fwknop mode")
-		}
-		if *fwknopKeyRef == "" {
-			return config{}, errors.New("--fwknop-key-ref is required in fwknop mode")
-		}
-		if *fwknopHMACRef == "" {
-			return config{}, errors.New("--fwknop-hmac-ref is required in fwknop mode")
-		}
-		cfg.fwknop = &fwknopConfig{
-			access:  *fwknopAccess,
-			dest:    *fwknopDest,
-			port:    *fwknopPort,
-			keyRef:  *fwknopKeyRef,
-			hmacRef: *fwknopHMACRef,
-		}
-		return cfg, nil
+// parseDuration parses a Go duration string, returning def when blank. If allowZero
+// is false the result must be strictly positive.
+func parseDuration(name, val string, def time.Duration, allowZero bool) (time.Duration, error) {
+	if strings.TrimSpace(val) == "" {
+		return def, nil
 	}
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	if d < 0 || (d == 0 && !allowZero) {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return d, nil
+}
 
-	if len(command) == 0 {
-		return config{}, errors.New("no command given; put it after '--' (e.g. ipv6rd -- /home/ubuntu/ipv6rd/poke-hole.sh), or use --fwknop-* flags for built-in fwknop mode")
+// validateAccessEntry checks one access-request entry: "proto/port" where proto is
+// tcp or udp and port is a single 1..65535 value or a "lo-hi" range.
+func validateAccessEntry(e string) error {
+	if strings.ContainsAny(e, ", ") {
+		return errors.New(`one protocol/port per entry; do not put several in one string`)
 	}
-	cfg.command = command
-	return cfg, nil
+	proto, port, ok := strings.Cut(e, "/")
+	if !ok {
+		return errors.New(`expected "proto/port", e.g. tcp/443`)
+	}
+	if proto != "tcp" && proto != "udp" {
+		return fmt.Errorf("protocol %q must be tcp or udp", proto)
+	}
+	if lo, hi, isRange := strings.Cut(port, "-"); isRange {
+		l, err := parsePort(lo)
+		if err != nil {
+			return err
+		}
+		h, err := parsePort(hi)
+		if err != nil {
+			return err
+		}
+		if l > h {
+			return fmt.Errorf("port range %s-%s is reversed", lo, hi)
+		}
+		return nil
+	}
+	_, err := parsePort(port)
+	return err
+}
+
+func parsePort(s string) (int, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("port %q is not a number", s)
+	}
+	if n < 1 || n > 65535 {
+		return 0, fmt.Errorf("port %d out of range 1..65535", n)
+	}
+	return n, nil
 }
 
 // resolveDest turns an IPv6 literal or a hostname into an IPv6 address.
 func resolveDest(s string) (net.IP, error) {
 	if ip := net.ParseIP(s); ip != nil {
 		if ip.To4() != nil {
-			return nil, fmt.Errorf("--dest %q is IPv4; an IPv6 destination is required", s)
+			return nil, fmt.Errorf("fwknop.dest %q is IPv4; an IPv6 SPA target is required", s)
 		}
 		return ip, nil
 	}
 	ips, err := net.LookupIP(s)
 	if err != nil {
-		return nil, fmt.Errorf("resolving --dest %q: %w", s, err)
+		return nil, fmt.Errorf("resolving fwknop.dest %q: %w", s, err)
 	}
 	for _, ip := range ips {
 		if ip.To4() == nil && ip.To16() != nil {
 			return ip, nil
 		}
 	}
-	return nil, fmt.Errorf("--dest %q has no AAAA (IPv6) address", s)
+	return nil, fmt.Errorf("fwknop.dest %q has no AAAA (IPv6) address", s)
 }
 
 // egressAddr returns the source IPv6 address the kernel would use to reach dest,
@@ -212,21 +302,14 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	attrs := []any{
-		"dest", cfg.destRaw, "dest_ip", cfg.dest.String(),
+	slog.Info("starting",
+		"spa_target", cfg.fwknop.dest, "dest_ip", cfg.dest.String(),
+		"spa_port", cfg.fwknop.port, "access", cfg.fwknop.access,
 		"debounce", cfg.debounce.String(), "reconcile", cfg.reconcile.String(),
-		"timeout", cfg.timeout.String(), "attempts", cfg.attempts,
-	}
-	if cfg.fwknop != nil {
-		attrs = append(attrs, "mode", "fwknop",
-			"spa_dest", cfg.fwknop.dest, "spa_port", cfg.fwknop.port, "access", cfg.fwknop.access)
-	} else {
-		attrs = append(attrs, "mode", "command", "command", cfg.command)
-	}
-	slog.Info("starting", attrs...)
+		"timeout", cfg.timeout.String(), "attempts", cfg.attempts)
 
-	// Select the per-rotation action. In fwknop mode this resolves the keys from
-	// 1Password up front (fail fast on misconfiguration) and caches them.
+	// Resolve the keys from 1Password up front (fail fast on misconfiguration) and
+	// cache them in the per-rotation action.
 	act, err := buildAction(ctx, cfg)
 	if err != nil {
 		return err
@@ -248,13 +331,13 @@ func run(cfg config) error {
 
 	var (
 		latest    string // most recent observed egress address (the desired target)
-		lastFired string // address of the last successful command run
-		running   bool   // a command is currently in flight
+		lastFired string // address of the last successful knock
+		running   bool   // a knock is currently in flight
 	)
 
-	// maybeFire starts a command run if one isn't already running and the latest
-	// target differs from what we last successfully fired with. Serialized: at
-	// most one run in flight.
+	// maybeFire starts a knock if one isn't already running and the latest target
+	// differs from what we last successfully fired with. Serialized: at most one run
+	// in flight.
 	maybeFire := func() {
 		if running || latest == "" || latest == lastFired {
 			return
@@ -412,15 +495,10 @@ func fireWithRetry(ctx context.Context, cfg config, addr string, action actionFu
 	return fmt.Errorf("all %d attempts failed: %w", cfg.attempts, lastErr)
 }
 
-// buildAction selects the per-rotation action: an in-process fwknop SPA knock (when
-// fwknop mode is configured) or running the configured command. In fwknop mode it
-// resolves the encryption and HMAC keys from 1Password once, up front, so re-knocks
-// never touch the network beyond the SPA packet itself.
+// buildAction resolves the encryption and HMAC keys from 1Password once, up front,
+// so re-knocks never touch the network beyond the SPA packet itself.
 func buildAction(ctx context.Context, cfg config) (actionFunc, error) {
-	if cfg.fwknop == nil {
-		return execAction(cfg.command), nil
-	}
-	encKey, hmacKey, err := resolveFwknopKeys(ctx, cfg.fwknop)
+	encKey, hmacKey, err := resolveFwknopKeys(ctx, &cfg.fwknop)
 	if err != nil {
 		return nil, err
 	}
@@ -428,25 +506,14 @@ func buildAction(ctx context.Context, cfg config) (actionFunc, error) {
 	return fwknopAction(cfg.fwknop, encKey, hmacKey), nil
 }
 
-// execAction runs the configured command with addr appended as the final argument
-// and exported as $IPV6RD_ADDR.
-func execAction(command []string) actionFunc {
-	return func(ctx context.Context, addr string) error {
-		args := append(append([]string{}, command[1:]...), addr)
-		c := exec.CommandContext(ctx, command[0], args...)
-		c.Env = append(os.Environ(), "IPV6RD_ADDR="+addr)
-		c.Stdout = os.Stderr
-		c.Stderr = os.Stderr
-		return c.Run()
-	}
-}
-
-// fwknopAction sends an fwknop SPA packet authorizing addr, using the pre-resolved
-// encryption and HMAC keys.
-func fwknopAction(fc *fwknopConfig, encKey, hmacKey []byte) actionFunc {
+// fwknopAction sends an fwknop SPA packet authorizing addr for the configured access
+// request, using the pre-resolved encryption and HMAC keys. The access entries are
+// joined into one fwknop access specification.
+func fwknopAction(fc fwknopConfig, encKey, hmacKey []byte) actionFunc {
+	access := strings.Join(fc.access, ",")
 	return func(ctx context.Context, addr string) error {
 		return fwknop.Knock{
-			Access:      fc.access,
+			Access:      access,
 			AllowIP:     addr,
 			Destination: fc.dest,
 			Port:        fc.port,
@@ -462,7 +529,7 @@ func fwknopAction(fc *fwknopConfig, encKey, hmacKey []byte) actionFunc {
 func resolveFwknopKeys(ctx context.Context, fc *fwknopConfig) ([]byte, []byte, error) {
 	token := strings.TrimSpace(os.Getenv("OP_SERVICE_ACCOUNT_TOKEN"))
 	if token == "" {
-		return nil, nil, errors.New("OP_SERVICE_ACCOUNT_TOKEN is not set (required for fwknop mode)")
+		return nil, nil, errors.New("OP_SERVICE_ACCOUNT_TOKEN is not set")
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

@@ -10,13 +10,11 @@ Type=simple
 # Address monitoring, route lookups and sending the SPA packet do not need root.
 User=ubuntu
 # OP_SERVICE_ACCOUNT_TOKEN for the 1Password SDK. Keep this file root-/owner-only
-# (0600): it holds a service-account token that can read the fwknop keys.
-EnvironmentFile=/etc/ipv6rd.env
-ExecStart=/home/ubuntu/ipv6rd/ipv6rd \
-    --dest atuin.martyloo.com --debounce 2s --reconcile 5m --timeout 60s --retries 3 \
-    --fwknop-dest atuin.martyloo.com --fwknop-port 62159 --fwknop-access tcp/8888 \
-    --fwknop-key-ref "op://fwknop/fwknop key/add more/text" \
-    --fwknop-hmac-ref "op://fwknop/fwknop hmac/add more/text"
+# (0600): it holds a service-account token that can read the fwknop keys. systemd
+# reads it as root before dropping to User=, so 0600 is fine. Everything else is
+# configured in /etc/ipv6rd/ipv6rd.toml.
+EnvironmentFile=/etc/ipv6rd/ipv6rd.env
+ExecStart=/home/ubuntu/ipv6rd/ipv6rd --config /etc/ipv6rd/ipv6rd.toml
 Restart=on-failure
 RestartSec=5s
 # Give an in-flight re-knock time to finish on stop before SIGKILL.

@@ -30,6 +30,10 @@ encode + UDP send and never touch 1Password.
   restart.
 - The generic `-- command` mode is **retained**; `poke-hole.sh` stays as a working
   example of it. Built-in fwknop mode is selected by the `--fwknop-*` flags.
+  **Superseded by [ADR-0003](./0003-configure-via-toml-file-fwknop-only.md):** the
+  CLI flags and generic command mode were later removed; ipv6rd is now configured by
+  a TOML file and re-knocks fwknop only. The rest of this ADR (in-process knock via
+  the library, keys from the 1Password SDK, resolved once at startup) still stands.
 
 ## Considered and rejected
 

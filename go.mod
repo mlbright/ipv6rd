@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/1password/onepassword-sdk-go v0.4.0
+	github.com/BurntSushi/toml v1.6.0
 	github.com/vishvananda/netlink v1.3.1
 )
 

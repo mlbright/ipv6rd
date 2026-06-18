@@ -1,0 +1,39 @@
+# ipv6rd configuration. Copy to /etc/ipv6rd/ipv6rd.toml and edit.
+#
+# Every setting lives here; the only input from outside this file is the
+# 1Password service-account token, read from the OP_SERVICE_ACCOUNT_TOKEN
+# environment variable (the systemd unit supplies it via /etc/ipv6rd/ipv6rd.env).
+
+# --- Watcher tunables (all optional; defaults shown) ---
+
+# Quiet period after an address event before recomputing the egress address.
+debounce  = "2s"
+# Reconciliation poll interval; backstop in case a netlink event is missed.
+reconcile = "5m"
+# Per-attempt timeout for a re-knock.
+timeout   = "60s"
+# Maximum knock attempts before giving up (bounded exponential backoff between
+# attempts). Must be >= 1.
+retries   = 3
+
+# --- fwknop SPA (required) ---
+
+[fwknop]
+# SPA target: the host running fwknopd. The packet is sent here, and this same
+# host is used for kernel source-address selection, so the egress address we
+# authorize is exactly the source this host will see. Must have an AAAA record
+# (or be an IPv6 literal); an IPv4-only host is not supported.
+dest = "spa.example.com"
+
+# UDP port fwknopd listens on for SPA packets.
+port = 62159
+
+# Access request: the protocol/port combinations to authorize. Sent as one
+# combined access spec in a single SPA packet. Each entry is "tcp|udp/port" or
+# "tcp|udp/lo-hi" for a range. Optional; defaults to ["tcp/443"].
+access = ["tcp/443", "tcp/22"]
+
+# 1Password secret references (op://vault/item/field) for the base64-encoded
+# encryption and HMAC keys. Resolved once at startup via the service account.
+key_ref  = "op://fwknop/fwknop key/add more/text"
+hmac_ref = "op://fwknop/fwknop hmac/add more/text"
