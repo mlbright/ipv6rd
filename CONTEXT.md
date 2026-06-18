@@ -25,5 +25,5 @@ The host running `fwknopd` that a re-knock's SPA packet is sent to. This same ho
 _Avoid_: fwknop host, server
 
 **Probe destination**:
-The destination the kernel runs source-address selection against to determine the egress address; no packet is ever sent to it (it is only an argument to a route lookup — see [ADR 0001](./docs/adr/0001-egress-address-via-route-get.md)). It is always the SPA target, never configured independently.
+The destination the kernel runs source-address selection against to determine the egress address; no packet is ever sent to it (a UDP socket is dialed to trigger source-address selection, then immediately closed — see [ADR 0001](./docs/adr/0001-egress-address-via-route-get.md)). It is always the SPA target, never configured independently.
 _Avoid_: dest, target (collides with SPA target)

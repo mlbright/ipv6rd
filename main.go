@@ -2,15 +2,15 @@
 // fwknop SPA grant whenever that address rotates, keeping the grant pinned to a
 // rotating IPv6 temporary/dynamic address.
 //
-// All settings are read from a TOML configuration file (default /etc/ipv6rd/ipv6rd.toml,
-// override with --config); the only input from outside the file is the 1Password
-// service-account token in OP_SERVICE_ACCOUNT_TOKEN. The SPA packet is sent in
-// process via the fwknop-go library, with the encryption and HMAC keys resolved
-// once at startup from 1Password. See docs/adr/0002 and docs/adr/0003.
+// All settings are read from a TOML configuration file (default path is
+// platform-specific; override with --config); the only input from outside the file
+// is the 1Password service-account token in OP_SERVICE_ACCOUNT_TOKEN. The SPA packet
+// is sent in process via the fwknop-go library, with the encryption and HMAC keys
+// resolved once at startup from 1Password. See docs/adr/0002 and docs/adr/0003.
 //
-// The egress address is determined by the kernel's source-address selection via
-// netlink RouteGet against the SPA target (see docs/adr/0001-egress-address-via-route-get.md),
-// not by parsing the interface address table. Linux-only.
+// The egress address is determined by the kernel's source-address selection via a UDP
+// socket dial to the SPA target (see docs/adr/0001-egress-address-via-route-get.md),
+// not by parsing the interface address table.
 package main
 
 import (
@@ -32,14 +32,14 @@ import (
 
 	onepassword "github.com/1password/onepassword-sdk-go"
 	"github.com/damienstuart/fwknop-go/fwknop"
-	"github.com/vishvananda/netlink"
 )
 
 // opIntegrationVersion identifies this integration to the 1Password SDK.
 const opIntegrationVersion = "1.0.0"
 
-// defaultConfigPath is read when --config is not given.
-const defaultConfigPath = "/etc/ipv6rd/ipv6rd.toml"
+// defaultConfigPath is read when --config is not given. Platform-specific; set by
+// platformDefaultConfigPath() in the platform watcher file.
+var defaultConfigPath = platformDefaultConfigPath()
 
 type config struct {
 	debounce  time.Duration // quiet period after an address event before recomputing
@@ -278,19 +278,20 @@ func resolveDest(s string) (net.IP, error) {
 	return nil, fmt.Errorf("fwknop.dest %q has no AAAA (IPv6) address", s)
 }
 
-// egressAddr returns the source IPv6 address the kernel would use to reach dest,
-// or "" if there is currently no usable source (e.g. no IPv6 connectivity).
+// egressAddr returns the source IPv6 address the kernel would use to reach dest by
+// dialing a UDP socket (no packet is sent). Returns "" if there is currently no
+// usable source (e.g. no IPv6 connectivity). See docs/adr/0001.
 func egressAddr(dest net.IP) (string, error) {
-	routes, err := netlink.RouteGet(dest)
+	conn, err := net.Dial("udp6", net.JoinHostPort(dest.String(), "1"))
 	if err != nil {
 		return "", err
 	}
-	for _, r := range routes {
-		if r.Src != nil {
-			return r.Src.String(), nil
-		}
+	defer conn.Close()
+	addr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || addr.IP == nil || addr.IP.IsUnspecified() {
+		return "", nil
 	}
-	return "", nil
+	return addr.IP.String(), nil
 }
 
 type fireResult struct {
@@ -315,8 +316,8 @@ func run(cfg config) error {
 		return err
 	}
 
-	// Address-event source: a goroutine owns the netlink subscription (including
-	// resubscribe on failure) and forwards a coalesced signal on every event.
+	// Address-event source: a goroutine watches for address changes and forwards a
+	// coalesced signal on every event.
 	events := make(chan struct{}, 1)
 	go watchAddrEvents(ctx, events)
 
@@ -407,60 +408,6 @@ func run(cfg config) error {
 			// rather than busy-looping.
 			if latest != res.target && latest != lastFired {
 				maybeFire()
-			}
-		}
-	}
-}
-
-// watchAddrEvents owns the netlink address-event subscription and forwards a
-// coalesced signal on out for every event, resubscribing if the subscription
-// dies. The main loop debounces these signals.
-func watchAddrEvents(ctx context.Context, out chan<- struct{}) {
-	for ctx.Err() == nil {
-		updates := make(chan netlink.AddrUpdate, 64)
-		done := make(chan struct{})
-		err := netlink.AddrSubscribeWithOptions(updates, done, netlink.AddrSubscribeOptions{
-			ErrorCallback: func(e error) {
-				if ctx.Err() == nil { // suppress the receive-interrupted error during shutdown
-					slog.Warn("netlink subscription error", "err", e)
-				}
-			},
-		})
-		if err != nil {
-			slog.Warn("address-event subscribe failed; retrying", "err", err)
-			close(done)
-			if !sleepCtx(ctx, 5*time.Second) {
-				return
-			}
-			continue
-		}
-
-		closed := drainUpdates(ctx, updates, out)
-		close(done)
-		if ctx.Err() != nil {
-			return
-		}
-		if closed {
-			slog.Warn("netlink updates channel closed; resubscribing")
-			sleepCtx(ctx, time.Second)
-		}
-	}
-}
-
-// drainUpdates forwards coalesced signals until the updates channel closes or ctx
-// is cancelled. It reports whether the channel closed (vs. ctx cancellation).
-func drainUpdates(ctx context.Context, updates <-chan netlink.AddrUpdate, out chan<- struct{}) bool {
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case _, ok := <-updates:
-			if !ok {
-				return true
-			}
-			select {
-			case out <- struct{}{}:
-			default: // a signal is already pending; coalesce
 			}
 		}
 	}
