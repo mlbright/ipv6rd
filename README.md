@@ -180,3 +180,130 @@ launchctl kickstart -k gui/$(id -u) com.ipv6rd.ipv6rd
 
 `make uninstall-launchd` unloads the agent and removes the plist, wrapper, and binary,
 leaving `~/.config/ipv6rd/ipv6rd.toml` and `~/.config/ipv6rd/ipv6rd.env` in place.
+
+## Troubleshooting
+
+`ipv6rd` logs to **stderr** as structured text (one `key=value` line per event). A
+healthy startup looks roughly like this:
+
+```
+level=INFO msg=starting ...
+level=INFO msg="resolved fwknop keys from 1Password" key_ref=op://... hmac_ref=op://...
+level=INFO msg=firing addr=spa.example.com
+level=INFO msg="egress address changed" reason=startup addr=2001:db8::1 previous=none
+level=INFO msg="fire succeeded" addr=2001:db8::1
+```
+
+Lines to watch for when something is wrong:
+
+- `msg="egress lookup failed"` / `msg="no egress source address (no IPv6
+  connectivity?)"` — the host can't pick a source address for `fwknop.dest`. Check
+  that the destination has an AAAA record and the host has working IPv6 (see below).
+- `msg="fire failed; will retry on next rotation or reconcile"` — the SPA packet
+  couldn't be sent (or the keys couldn't be resolved). The preceding `attempt
+  failed` lines carry the underlying error.
+
+### macOS (launchd)
+
+**View the logs.** launchd redirects both stdout and stderr to a single file:
+
+```sh
+tail -f ~/Library/Logs/ipv6rd.log
+```
+
+If that file is missing or empty, the agent almost certainly never started — check
+its status rather than the log.
+
+**Check whether the agent is loaded and its last exit code:**
+
+```sh
+launchctl print gui/$(id -u)/com.ipv6rd.ipv6rd
+```
+
+The output's `state` (should be `running`), `pid`, and `last exit code` are the
+useful fields. A quicker one-liner:
+
+```sh
+launchctl list | grep ipv6rd      # columns: PID  last-exit-status  label
+```
+
+A `-` in the PID column with a non-zero exit status means it ran and crashed; a `0`
+exit with no PID means it exited cleanly (unexpected for a long-running agent).
+
+**Common failures:**
+
+- **`Bootstrap failed: 5: Input/output error` on `launchctl bootstrap`** — the agent
+  is already loaded. Boot it out first, then bootstrap again:
+  ```sh
+  launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.ipv6rd.ipv6rd.plist
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ipv6rd.ipv6rd.plist
+  ```
+- **Exit code 78 / repeated restarts with an empty log** — launchd couldn't exec
+  the wrapper, usually a bad path or missing exec bit. Confirm the wrapper exists
+  and is executable, and that the plist points at it:
+  ```sh
+  ls -l ~/.local/bin/ipv6rd-wrapper        # should be -rwxr-xr-x
+  ~/.local/bin/ipv6rd-wrapper              # run it by hand to see the real error
+  ```
+- **`OP_SERVICE_ACCOUNT_TOKEN` errors / 1Password auth failures** — the wrapper
+  sources `~/.config/ipv6rd/ipv6rd.env` before exec'ing the binary; if the token is
+  blank or the file is missing, the SDK can't fetch the keys. Verify:
+  ```sh
+  grep OP_SERVICE_ACCOUNT_TOKEN ~/.config/ipv6rd/ipv6rd.env
+  ```
+
+**Apply changes and restart.** A config or env-file edit takes effect on restart;
+editing the plist requires a full bootout/bootstrap (launchd caches the loaded copy):
+
+```sh
+launchctl kickstart -k gui/$(id -u) com.ipv6rd.ipv6rd   # after a config/env edit
+```
+
+### Linux (systemd)
+
+**View the logs:**
+
+```sh
+journalctl -u ipv6rd -f             # follow live
+journalctl -u ipv6rd -e             # jump to the end
+journalctl -u ipv6rd --since "10 min ago"
+```
+
+**Check service status and the last exit reason:**
+
+```sh
+systemctl status ipv6rd
+```
+
+Look at `Active:` (should be `active (running)`) and the most recent log lines it
+prints. `Result: exit-code` with `Restart=on-failure` means it's crash-looping —
+the journal has the error.
+
+**Common failures:**
+
+- **`status=203/EXEC` or `changed working dir … No such file`** — the `ExecStart`
+  path is wrong. `install-systemd` rewrites it to `$PREFIX/bin/ipv6rd`; confirm the
+  binary is actually there and the unit matches:
+  ```sh
+  systemctl cat ipv6rd | grep ExecStart
+  ```
+- **`OP_SERVICE_ACCOUNT_TOKEN` unset / 1Password auth failures** — the token comes
+  from `EnvironmentFile=/etc/ipv6rd/ipv6rd.env`. If it's blank the keys can't be
+  resolved at startup. Check (as root, since the file is `0600`):
+  ```sh
+  sudo grep OP_SERVICE_ACCOUNT_TOKEN /etc/ipv6rd/ipv6rd.env
+  ```
+- **`no egress source address (no IPv6 connectivity?)`** — confirm the host can
+  route to the SPA target over IPv6 and that the source it picks is what `fwknopd`
+  expects:
+  ```sh
+  ip -6 route get $(getent ahostsv6 spa.example.com | awk 'NR==1{print $1}')
+  ```
+
+**Apply changes and restart.** A config or env edit takes effect on restart; a unit
+edit needs a `daemon-reload` first:
+
+```sh
+sudo systemctl restart ipv6rd                 # after a config/env edit
+sudo systemctl daemon-reload && sudo systemctl restart ipv6rd   # after a unit edit
+```
