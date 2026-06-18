@@ -38,7 +38,7 @@ sends the SPA packet. See
 [ADR 0002](./docs/adr/0002-in-process-fwknop-knock-via-library-and-1password-sdk.md)
 and [ADR 0003](./docs/adr/0003-configure-via-toml-file-fwknop-only.md).
 
-**Linux-only** (uses `rtnetlink`). Runs unprivileged.
+Runs unprivileged on **Linux** (rtnetlink) and **macOS** (poll-based, 5 s interval).
 
 ## Build
 
@@ -86,7 +86,8 @@ Notes:
 The 1Password **service-account token** is *not* in the file — it is read from the
 `OP_SERVICE_ACCOUNT_TOKEN` environment variable.
 
-Config changes take effect on **restart** (`systemctl restart ipv6rd`); the file is
+Config changes take effect on **restart** (`systemctl restart ipv6rd` on Linux,
+`launchctl kickstart -k gui/$(id -u) com.ipv6rd.ipv6rd` on macOS); the file is
 not watched.
 
 ## Run
@@ -142,3 +143,40 @@ local users.
 
 `make uninstall-systemd` stops the service and removes the unit and binary, leaving
 `/etc/ipv6rd/ipv6rd.toml` and `/etc/ipv6rd/ipv6rd.env` (which holds the secret) in place.
+
+## Install as a launchd user agent (macOS)
+
+No root required. The agent starts at login and runs as your user.
+
+```sh
+make build                  # needs Go; produces ./ipv6rd
+make install-launchd        # install binary, wrapper, plist, config, and env-file scaffold
+```
+
+`install-launchd` installs the binary to `/usr/local/bin` (override `PREFIX=`), writes
+a wrapper script at `/usr/local/bin/ipv6rd-wrapper` that sources the env file before
+exec-ing the binary, scaffolds `~/.config/ipv6rd/ipv6rd.toml` from `ipv6rd.toml.example`
+(only if absent), and creates `~/.config/ipv6rd/ipv6rd.env` (`0600`, only if absent).
+
+After installing, fill in the two files and start the agent:
+
+```sh
+$EDITOR ~/.config/ipv6rd/ipv6rd.toml         # SPA target, port, access list, op:// key refs
+$EDITOR ~/.config/ipv6rd/ipv6rd.env          # set OP_SERVICE_ACCOUNT_TOKEN=ops_...
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ipv6rd.ipv6rd.plist
+```
+
+Logs go to `~/Library/Logs/ipv6rd.log`.
+
+```sh
+tail -f ~/Library/Logs/ipv6rd.log
+```
+
+To restart after a config change:
+
+```sh
+launchctl kickstart -k gui/$(id -u) com.ipv6rd.ipv6rd
+```
+
+`make uninstall-launchd` unloads the agent and removes the plist, wrapper, and binary,
+leaving `~/.config/ipv6rd/ipv6rd.toml` and `~/.config/ipv6rd/ipv6rd.env` in place.
