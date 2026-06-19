@@ -28,8 +28,8 @@ dest = "spa.example.com"
 # UDP port fwknopd listens on for SPA packets.
 port = 62159
 
-# Access request: the protocol/port combinations to authorize. Sent as one
-# combined access spec in a single SPA packet. Each entry is "tcp|udp/port" or
+# Access request: the protocol/port combinations to authorize. Sent as
+# individual access specs in separate SPA packets. Each entry is "tcp|udp/port" or
 # "tcp|udp/lo-hi" for a range. Optional; defaults to ["tcp/443"].
 access = ["tcp/443", "tcp/22"]
 
