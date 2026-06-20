@@ -471,6 +471,8 @@ func fwknopAction(fc fwknopConfig, encKey, hmacKey []byte) actionFunc {
 			}.Send(ctx)
 			if err != nil {
 				return fmt.Errorf("access %s: %w", entry, err)
+			} else {
+				slog.Info("sending access", "entry", entry, "addr", addr)
 			}
 		}
 		return nil
