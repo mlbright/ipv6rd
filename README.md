@@ -87,7 +87,7 @@ The 1Password **service-account token** is *not* in the file — it is read from
 `OP_SERVICE_ACCOUNT_TOKEN` environment variable.
 
 Config changes take effect on **restart** (`systemctl restart ipv6rd` on Linux,
-`launchctl kickstart -k gui/$(id -u) com.ipv6rd.ipv6rd` on macOS); the file is
+`launchctl kickstart -k gui/$(id -u)/com.ipv6rd.ipv6rd` on macOS); the file is
 not watched.
 
 ## Run
@@ -175,7 +175,7 @@ tail -f ~/Library/Logs/ipv6rd.log
 To restart after a config change:
 
 ```sh
-launchctl kickstart -k gui/$(id -u) com.ipv6rd.ipv6rd
+launchctl kickstart -k gui/$(id -u)/com.ipv6rd.ipv6rd
 ```
 
 `make uninstall-launchd` unloads the agent and removes the plist, wrapper, and binary,
@@ -256,7 +256,7 @@ exit with no PID means it exited cleanly (unexpected for a long-running agent).
 editing the plist requires a full bootout/bootstrap (launchd caches the loaded copy):
 
 ```sh
-launchctl kickstart -k gui/$(id -u) com.ipv6rd.ipv6rd   # after a config/env edit
+launchctl kickstart -k gui/$(id -u)/com.ipv6rd.ipv6rd   # after a config/env edit
 ```
 
 ### Linux (systemd)
