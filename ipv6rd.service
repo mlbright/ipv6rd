@@ -1,6 +1,6 @@
 [Unit]
 Description=ipv6rd - re-knock fwknop SPA when the egress IPv6 address rotates
-Documentation=README.md
+Documentation=https://github.com/mlbright/ipv6rd/blob/main/README.md
 # Source selection and sending the SPA packet need a usable IPv6 address.
 After=network-online.target
 Wants=network-online.target

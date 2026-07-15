@@ -44,6 +44,7 @@ var defaultConfigPath = platformDefaultConfigPath()
 type config struct {
 	debounce  time.Duration // quiet period after an address event before recomputing
 	reconcile time.Duration // reconciliation poll interval (backstop for missed events)
+	refresh   time.Duration // grant refresh: re-knock interval for an unchanged address; 0 disables
 	timeout   time.Duration // per-attempt knock timeout
 	attempts  int           // max knock attempts before giving up
 	dest      net.IP        // probe destination (the resolved SPA target) for source-address selection
@@ -99,6 +100,7 @@ func main() {
 type fileConfig struct {
 	Debounce  string      `toml:"debounce"`
 	Reconcile string      `toml:"reconcile"`
+	Refresh   string      `toml:"refresh"`
 	Timeout   string      `toml:"timeout"`
 	Retries   *int        `toml:"retries"`
 	Fwknop    *fwknopFile `toml:"fwknop"`
@@ -133,6 +135,10 @@ func loadConfig(path string) (config, error) {
 		return config{}, err
 	}
 	reconcile, err := parseDuration("reconcile", fc.Reconcile, 5*time.Minute, false)
+	if err != nil {
+		return config{}, err
+	}
+	refresh, err := parseDuration("refresh", fc.Refresh, 0, true)
 	if err != nil {
 		return config{}, err
 	}
@@ -187,6 +193,7 @@ func loadConfig(path string) (config, error) {
 	return config{
 		debounce:  debounce,
 		reconcile: reconcile,
+		refresh:   refresh,
 		timeout:   timeout,
 		attempts:  attempts,
 		dest:      ip,
@@ -303,10 +310,15 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	refreshDesc := "(disabled)"
+	if cfg.refresh > 0 {
+		refreshDesc = cfg.refresh.String()
+	}
 	slog.Info("starting",
 		"spa_target", cfg.fwknop.dest, "dest_ip", cfg.dest.String(),
 		"spa_port", cfg.fwknop.port, "access", cfg.fwknop.access,
 		"debounce", cfg.debounce.String(), "reconcile", cfg.reconcile.String(),
+		"refresh", refreshDesc,
 		"timeout", cfg.timeout.String(), "attempts", cfg.attempts)
 
 	// Resolve the keys from 1Password up front (fail fast on misconfiguration) and
@@ -327,6 +339,18 @@ func run(cfg config) error {
 	}
 	reconcile := time.NewTicker(cfg.reconcile)
 	defer reconcile.Stop()
+
+	// Grant refresh: re-knock the unchanged egress address on an interval so a
+	// server-side grant that fwknopd expires (FW_ACCESS_TIMEOUT) is renewed. A
+	// timer rather than a ticker so the interval measures time since the last
+	// successful knock. When disabled the nil channel blocks forever in the select.
+	var refresh *time.Timer
+	var refreshC <-chan time.Time
+	if cfg.refresh > 0 {
+		refresh = time.NewTimer(cfg.refresh)
+		defer refresh.Stop()
+		refreshC = refresh.C
+	}
 
 	fireDone := make(chan fireResult, 1)
 
@@ -394,6 +418,12 @@ func run(cfg config) error {
 		case <-reconcile.C:
 			recompute("reconcile")
 
+		case <-refreshC:
+			slog.Info("refresh interval elapsed; re-knocking", "last_fired", orNone(lastFired))
+			lastFired = "" // fire again even though the address is unchanged
+			recompute("refresh")
+			refresh.Reset(cfg.refresh)
+
 		case res := <-fireDone:
 			running = false
 			if res.err != nil {
@@ -401,6 +431,17 @@ func run(cfg config) error {
 			} else {
 				lastFired = res.target
 				slog.Info("fire succeeded", "addr", res.target)
+				if refresh != nil {
+					// Restart the countdown so refresh measures from this success,
+					// not from the previous tick.
+					if !refresh.Stop() {
+						select {
+						case <-refresh.C:
+						default:
+						}
+					}
+					refresh.Reset(cfg.refresh)
+				}
 			}
 			// Converge-to-latest: only re-fire immediately if the address moved on
 			// to a *newer* value while this run was in flight. If the run failed

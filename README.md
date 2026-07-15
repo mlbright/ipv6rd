@@ -32,7 +32,10 @@ See [`CONTEXT.md`](./CONTEXT.md) for terminology and
 
 It fires once on startup, serializes runs (converging to the latest address if it
 rotates again mid-run), and retries a failed re-knock with bounded exponential
-backoff (2s → 8s → 32s) before waiting for the next event. State is in memory only.
+backoff (2s → 8s → 32s) before waiting for the next event. With `refresh` set, it
+also re-knocks the *unchanged* address whenever that long has passed since the last
+successful knock — a grant keep-alive for hosts whose egress address never rotates.
+State is in memory only.
 The 1Password keys are resolved once at startup and cached, so each rotation only
 sends the SPA packet. See
 [ADR 0002](./docs/adr/0002-in-process-fwknop-knock-via-library-and-1password-sdk.md)
@@ -57,6 +60,7 @@ All settings live in a TOML file (default `/etc/ipv6rd/ipv6rd.toml`). Copy
 # Watcher tunables (all optional; defaults shown).
 debounce  = "2s"     # quiet period after an address event before recomputing
 reconcile = "5m"     # reconciliation poll interval; backstop for missed events
+refresh   = "0s"     # grant refresh: re-knock the unchanged address this often; "0" disables
 timeout   = "60s"    # per-attempt timeout for a re-knock
 retries   = 3        # max attempts before giving up (>= 1)
 
@@ -70,6 +74,12 @@ hmac_ref = "op://fwknop/fwknop hmac/add more/text"   # base64 HMAC key
 
 Notes:
 
+- **`refresh`** re-knocks the *unchanged* egress address on a fixed interval, so a
+  server-side grant that `fwknopd` expires (`FW_ACCESS_TIMEOUT`) is renewed before
+  it lapses. Without it, a knock is only sent when the address rotates — which
+  never happens on a host with a stable address (e.g. a server), so the grant is
+  knocked once per daemon start and then left to expire. Set it comfortably below
+  the SPA target's `FW_ACCESS_TIMEOUT`; `"0"` (the default) disables it.
 - **`fwknop.dest`** is the host running `fwknopd`. The packet is sent there, and
   the same host is used for source-address selection — so it must have an AAAA
   record (or be an IPv6 literal). An IPv4-only `fwknopd` host is not supported.

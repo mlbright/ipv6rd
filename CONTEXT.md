@@ -27,3 +27,7 @@ _Avoid_: fwknop host, server
 **Probe destination**:
 The destination the kernel runs source-address selection against to determine the egress address; no packet is ever sent to it (a UDP socket is dialed to trigger source-address selection, then immediately closed — see [ADR 0001](./docs/adr/0001-egress-address-via-route-get.md)). It is always the SPA target, never configured independently.
 _Avoid_: dest, target (collides with SPA target)
+
+**Grant refresh**:
+Re-knocking the current egress address on a fixed interval even though no rotation occurred, so a server-side grant that `fwknopd` expires (`FW_ACCESS_TIMEOUT`) is renewed before it lapses. Optional (`refresh` in the TOML file; disabled by default) and essential on hosts whose egress address is stable (e.g. servers), where rotations alone would never trigger a re-knock after the startup one. The interval measures from the last successful re-knock, whatever triggered it.
+_Avoid_: keep-alive, heartbeat, rotation (no address change is involved)

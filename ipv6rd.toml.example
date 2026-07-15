@@ -10,6 +10,12 @@
 debounce  = "2s"
 # Reconciliation poll interval; backstop in case a netlink event is missed.
 reconcile = "5m"
+# Grant refresh: re-knock the current egress address this often even when it has
+# not rotated, so a server-side grant that fwknopd expires (FW_ACCESS_TIMEOUT)
+# is renewed before it lapses. Set it comfortably below the SPA target's
+# FW_ACCESS_TIMEOUT. "0" disables it: knocks are then driven only by rotations,
+# which never happens on a host with a stable address.
+refresh   = "0s"
 # Per-attempt timeout for a re-knock.
 timeout   = "60s"
 # Maximum knock attempts before giving up (bounded exponential backoff between
