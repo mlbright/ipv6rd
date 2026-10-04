@@ -17,7 +17,7 @@ Re-sending the fwknop Single Packet Authorization with the current egress addres
 _Avoid_: knock, ping, poke
 
 **Access request**:
-The set of protocol/port combinations a single SPA packet asks `fwknopd` to open for the egress address, e.g. `tcp/443` plus `tcp/22`. Expressed as a list but sent as one combined fwknop access specification in one knock to one SPA target — not one knock per entry.
+The set of protocol/port combinations a re-knock asks `fwknopd` to open for the egress address, e.g. `tcp/443` plus `tcp/22`. Each entry is sent as its own SPA packet to the one SPA target, because the SPA message format carries a single protocol/port.
 _Avoid_: access spec (the wire-format string is a serialization of this), port list (omits the protocol)
 
 **SPA target**:

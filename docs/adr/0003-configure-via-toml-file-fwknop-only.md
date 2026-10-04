@@ -7,6 +7,8 @@ gone, and with them the generic `-- command` mode — the tool is now exclusivel
 built-in fwknop re-knocker. The fwknop access request is expressed as a list of
 protocol/port combinations (`access = ["tcp/443", "tcp/22"]`) that are joined into
 one combined access spec and sent in a single SPA packet to one SPA target.
+**Updated by `a82d3a7`:** each entry is now sent as its own SPA packet, because the
+SPA message format carries a single protocol/port; the rest of this ADR still stands.
 
 We did this because the configuration had outgrown flags — a list of access
 entries alongside the watcher tunables and SPA parameters reads far better as a
