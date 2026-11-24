@@ -1,0 +1,41 @@
+# Supply-chain policy for `make audit` (cargo deny check). See ADR-0005.
+
+[graph]
+# The shipped binary is built for these targets.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+
+[advisories]
+# Any RustSec security advisory fails the check; "unmaintained" notices for
+# dependencies are reported without failing it.
+unmaintained = "none"
+yanked = "deny"
+
+[licenses]
+# The binary links fkospa (GPL-2.0-only), so every dependency must be
+# compatible with GPL-2.0-only. Dual-licensed crates such as
+# "MIT OR Apache-2.0" pass via MIT; Apache-2.0-only crates are rejected
+# (the FSF considers Apache-2.0 incompatible with GPLv2).
+allow = [
+    "GPL-2.0-only",
+    "MIT",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+]
+# Add a license here only after checking it is GPL-2.0-compatible.
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# fkospa, pinned to a reviewed commit in Cargo.toml (ADR-0008).
+allow-git = ["https://github.com/mlbright/fwknop-rs"]

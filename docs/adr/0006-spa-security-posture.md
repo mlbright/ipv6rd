@@ -45,8 +45,10 @@ to 32–128 bytes, different from the encryption key.
 
 **Secrets stay out of leak paths (threat d).** Keys live only in types that zero
 their memory on drop and never print their contents. The 1Password token is read
-once, removed from the process environment before any thread starts, and zeroed
-after use. Core dumps are disabled (`RLIMIT_CORE=0`; on Linux also
+once, removed from the process environment before any thread starts (so no child
+inherits it and the process no longer sees it), and zeroed after use. The kernel's
+copy of the initial environment, `/proc/<pid>/environ`, still holds the original
+bytes; with the dumpable flag cleared, only root can read it. Core dumps are disabled (`RLIMIT_CORE=0`; on Linux also
 `PR_SET_DUMPABLE=0`, which also blocks same-user ptrace and `/proc/<pid>/environ`
 and `/proc/<pid>/mem`). Key memory is not mlocked: it is about 64 bytes, and mlock
 adds startup failure modes for little gain. The systemd unit carries a sandboxing
