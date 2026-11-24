@@ -7,18 +7,60 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Address monitoring, route lookups and sending the SPA packet do not need root.
+# Address monitoring, source selection and sending SPA packets need no root.
 User=ubuntu
-# OP_SERVICE_ACCOUNT_TOKEN for the 1Password SDK. Keep this file root-/owner-only
+# OP_SERVICE_ACCOUNT_TOKEN for the 1Password CLI. Keep this file root-/owner-only
 # (0600): it holds a service-account token that can read the fwknop keys. systemd
 # reads it as root before dropping to User=, so 0600 is fine. Everything else is
 # configured in /etc/ipv6rd/ipv6rd.toml.
 EnvironmentFile=/etc/ipv6rd/ipv6rd.env
+# A private, writable config directory for `op`, since home directories are
+# read-only below (ADR-0007).
+RuntimeDirectory=ipv6rd
+RuntimeDirectoryMode=0700
+Environment=OP_CONFIG_DIR=%t/ipv6rd
 ExecStart=/home/ubuntu/ipv6rd/ipv6rd --config /etc/ipv6rd/ipv6rd.toml
+
+# Restarts (ADR-0007). Exit code 2 is a misconfiguration (bad config, missing
+# token or `op`, keys that break the key rules): a restart cannot fix it and
+# would only spend 1Password requests, so it is not restarted. Other failures
+# restart with a delay growing from 5 s to 15 min (systemd 254+).
 Restart=on-failure
 RestartSec=5s
-# Give an in-flight re-knock time to finish on stop before SIGKILL.
+RestartSteps=10
+RestartMaxDelaySec=15min
+RestartPreventExitStatus=2
 TimeoutStopSec=30s
+
+# Sandboxing (ADR-0006). Check with: systemd-analyze security ipv6rd
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+# AF_NETLINK: address events. AF_INET6: the probe and SPA packets.
+# AF_INET and AF_UNIX: `op` reaching 1Password (which may be IPv4-only) and DNS.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+UMask=0077
+# No core dumps, even before ipv6rd disables them itself.
+LimitCORE=0
 
 [Install]
 WantedBy=multi-user.target

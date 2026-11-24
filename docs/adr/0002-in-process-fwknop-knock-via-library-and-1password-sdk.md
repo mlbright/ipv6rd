@@ -34,6 +34,9 @@ encode + UDP send and never touch 1Password.
   CLI flags and generic command mode were later removed; ipv6rd is now configured by
   a TOML file and re-knocks fwknop only. The rest of this ADR (in-process knock via
   the library, keys from the 1Password SDK, resolved once at startup) still stands.
+- **Superseded in part by [ADR-0007](./0007-keys-via-op-cli.md):** the Rust rewrite
+  fetches the keys with `op read` instead of the Go SDK; they are still resolved
+  once at startup through a service account.
 
 ## Considered and rejected
 

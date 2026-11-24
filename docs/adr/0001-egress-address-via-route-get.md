@@ -5,7 +5,8 @@ address it would select for a destination, rather than by reading and filtering 
 interface address table (`ip -6 addr` / `AddrList`).
 
 The mechanism is a UDP socket dial: `net.Dial("udp6", dest)` binds a socket without
-sending any packets, and the kernel performs RFC 6724 source-address selection as
+sending any packets (in the Rust rewrite, ADR-0005: binding a UDP socket to `[::]:0`
+and connecting it to the SPA target), and the kernel performs RFC 6724 source-address selection as
 part of the connect. Reading `conn.LocalAddr()` returns exactly the IP the kernel
 would use as the source for real traffic to that destination.
 
@@ -20,7 +21,8 @@ for the fwknop re-knock.
 - The tool is intentionally agnostic to the `temporary` (RFC 8981) vs `dynamic`
   (DHCPv6) distinction — it never inspects that flag. See "Egress address" in
   `CONTEXT.md`.
-- This is a pure-Go, cross-platform implementation with no OS-specific API surface.
+- This is a portable implementation with no OS-specific API surface (pure Go
+  originally, the standard library's `UdpSocket` in the Rust rewrite).
   See [ADR-0004](./0004-macos-support.md) for the macOS port that motivated the
   change from `RouteGet`.
 - The dial returns the *current* selection only; detecting *change* still requires

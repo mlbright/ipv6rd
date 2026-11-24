@@ -35,7 +35,9 @@ Linux it remains `/etc/ipv6rd/ipv6rd.toml`. The `--config` override works on bot
 **Code structure.** Platform-specific code lives in build-tag-split files:
 `watcher_linux.go` (rtnetlink subscription) and `watcher_darwin.go` (polling). Both
 implement `watchAddrEvents(ctx, out)` and `platformDefaultConfigPath()`. All other
-code is shared in `main.go`.
+code is shared in `main.go`. **Updated by ADR-0005:** in the Rust rewrite these are
+`src/watch/linux.rs` (a raw rtnetlink socket) and `src/watch/macos.rs` (polling
+`getifaddrs`), each providing `spawn(out)` and `default_config_path()`.
 
 ## Consequences
 
@@ -47,6 +49,11 @@ code is shared in `main.go`.
   on the `fwknopd` side.
 - The binary only compiles for `linux` and `darwin`; other platforms get a build
   error at the watcher file.
+- **Updated by ADR-0007:** the wrapper also sets `umask 077`, puts
+  `/opt/homebrew/bin:/usr/local/bin` on `PATH` (where `op` usually lives), and
+  sources the env file with `set -a` so its variables are exported. The earlier
+  wrapper sourced it without exporting, so a plain `OP_SERVICE_ACCOUNT_TOKEN=...`
+  line never reached the binary. The plist sets `ThrottleInterval` to 300 s.
 
 ## Considered and rejected
 
