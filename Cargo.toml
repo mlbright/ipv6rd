@@ -1,0 +1,30 @@
+[package]
+name = "ipv6rd"
+version = "0.2.0"
+description = "Re-knock an fwknop SPA grant whenever the host's egress IPv6 address rotates"
+edition = "2024"
+rust-version = "1.99.1"
+license = "GPL-2.0-only"
+repository = "https://github.com/mlbright/ipv6rd"
+publish = false
+
+[dependencies]
+# SPA encoding: the same codec the fwknop-rs server decodes with. Pinned to a
+# reviewed commit; bumping it is a deliberate, reviewed change (ADR-0008).
+fkospa = { git = "https://github.com/mlbright/fwknop-rs", rev = "2eaaaeaf8ceb6f8c4f25b8bc87ed64376c2e5e2b", version = "0.1.0" }
+crossbeam-channel = "0.5"
+nix = { version = "0.31", features = ["fs", "net", "process", "resource", "signal", "socket", "user"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+zeroize = "1.9"
+
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+strip = true
+lto = "thin"

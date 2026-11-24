@@ -16,6 +16,9 @@ the source address.
 - `fkospa`'s API still offers the legacy IV mode and the MD5 and SHA-1 digests.
   ipv6rd's own code always passes `EncryptionMode::Cbc` and `HmacType::Sha256`, and
   no config path reaches anything else. Tests hold that line, not the type system.
+  In fkospa the legacy IV mode differs from CBC only by padding keys shorter than
+  16 bytes, so with the 32-byte keys ADR-0006 requires the two produce identical
+  packets, and the weakness legacy mode carries cannot arise.
 - `fkospa` is GPL-2.0-only, so the distributed ipv6rd binary is GPL-2.0-only.
 - `fkospa` is new (v0.1.0, 2026-11) and unaudited. Bumping the pinned commit is a
   deliberate change that gets reviewed.

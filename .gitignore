@@ -3,3 +3,4 @@
 
 # Packaging output (`make package`)
 /dist/
+/target/
