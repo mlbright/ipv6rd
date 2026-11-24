@@ -46,7 +46,12 @@ impl Proc {
     }
 
     fn count(&self, needle: &str) -> usize {
-        self.lines.lock().unwrap().iter().filter(|l| l.contains(needle)).count()
+        self.lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.contains(needle))
+            .count()
     }
 
     fn wait_for(&self, needle: &str, times: usize) {
@@ -83,9 +88,10 @@ struct Server {
 }
 
 fn fwknopd_path() -> PathBuf {
-    PathBuf::from(std::env::var_os("FWKNOPD").expect(
-        "set FWKNOPD to an fwknop-rs fwknopd binary (make interop does this)",
-    ))
+    PathBuf::from(
+        std::env::var_os("FWKNOPD")
+            .expect("set FWKNOPD to an fwknop-rs fwknopd binary (make interop does this)"),
+    )
 }
 
 fn temp_dir(tag: &str) -> PathBuf {
@@ -97,7 +103,11 @@ fn temp_dir(tag: &str) -> PathBuf {
 }
 
 fn free_port() -> u16 {
-    UdpSocket::bind("[::1]:0").unwrap().local_addr().unwrap().port()
+    UdpSocket::bind("[::1]:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// Starts fwknopd on [::1] with the README's recommended access stanza.
@@ -134,7 +144,13 @@ fn start_server(tag: &str) -> Server {
         .args(["-f", "-t"]);
     let proc = Proc::spawn(cmd);
     proc.wait_for("UDP server listening", 1);
-    Server { dir, port, proc, key_b64, hmac_b64 }
+    Server {
+        dir,
+        port,
+        proc,
+        key_b64,
+        hmac_b64,
+    }
 }
 
 fn decode(b64: &str) -> Zeroizing<Vec<u8>> {
@@ -151,23 +167,54 @@ fn fwknopd_accepts_knocks_and_rejects_replays_and_spoofed_sources() {
 
     // A packet sent from the address it authorizes is accepted...
     let data = build_packet(&keys, Ipv6Addr::LOCALHOST, "tcp/443".parse().unwrap()).unwrap();
-    send_packet(Ipv6Addr::LOCALHOST, target, data.as_str().as_bytes(), timeout).unwrap();
+    send_packet(
+        Ipv6Addr::LOCALHOST,
+        target,
+        data.as_str().as_bytes(),
+        timeout,
+    )
+    .unwrap();
     server.proc.wait_for(ACCEPTED, 1);
 
     // ...and the identical packet again is a replay.
-    send_packet(Ipv6Addr::LOCALHOST, target, data.as_str().as_bytes(), timeout).unwrap();
+    send_packet(
+        Ipv6Addr::LOCALHOST,
+        target,
+        data.as_str().as_bytes(),
+        timeout,
+    )
+    .unwrap();
     server.proc.wait_for("Replay detected", 1);
 
     // An allow IP that is not the packet's source is refused.
-    let spoofed = build_packet(&keys, "2001:db8::1".parse().unwrap(), "tcp/443".parse().unwrap()).unwrap();
-    send_packet(Ipv6Addr::LOCALHOST, target, spoofed.as_str().as_bytes(), timeout).unwrap();
+    let spoofed = build_packet(
+        &keys,
+        "2001:db8::1".parse().unwrap(),
+        "tcp/443".parse().unwrap(),
+    )
+    .unwrap();
+    send_packet(
+        Ipv6Addr::LOCALHOST,
+        target,
+        spoofed.as_str().as_bytes(),
+        timeout,
+    )
+    .unwrap();
     server.proc.wait_for("Source address mismatch", 1);
 
     // The full knock: one accepted packet per access entry.
-    let knocker = Knocker { target, access: vec!["tcp/443".parse().unwrap(), "tcp/22".parse().unwrap()], keys };
+    let knocker = Knocker {
+        target,
+        access: vec!["tcp/443".parse().unwrap(), "tcp/22".parse().unwrap()],
+        keys,
+    };
     knocker.knock(Ipv6Addr::LOCALHOST, timeout).unwrap();
     server.proc.wait_for(ACCEPTED, 3);
-    assert_eq!(server.proc.count(ACCEPTED), 3, "no other packet may be accepted");
+    assert_eq!(
+        server.proc.count(ACCEPTED),
+        3,
+        "no other packet may be accepted"
+    );
     let _ = std::fs::remove_dir_all(&server.dir);
 }
 
@@ -205,7 +252,9 @@ fn the_daemon_knocks_fwknopd_end_to_end() {
     .unwrap();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ipv6rd"));
-    cmd.arg("--config").arg(&config).env("OP_SERVICE_ACCOUNT_TOKEN", "ops_interop_dummy");
+    cmd.arg("--config")
+        .arg(&config)
+        .env("OP_SERVICE_ACCOUNT_TOKEN", "ops_interop_dummy");
     let daemon = Proc::spawn(cmd);
 
     daemon.wait_for("msg=\"fire succeeded\" addr=::1", 1);
@@ -221,8 +270,11 @@ fn the_daemon_knocks_fwknopd_end_to_end() {
     }
 
     // SIGTERM stops it cleanly with exit code 0.
-    nix::sys::signal::kill(nix::unistd::Pid::from_raw(daemon.pid()), nix::sys::signal::Signal::SIGTERM)
-        .unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(daemon.pid()),
+        nix::sys::signal::Signal::SIGTERM,
+    )
+    .unwrap();
     daemon.wait_for("shutdown signal received, stopping", 1);
     let mut daemon = daemon;
     let deadline = Instant::now() + Duration::from_secs(10);
